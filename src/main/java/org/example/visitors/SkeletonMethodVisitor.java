@@ -37,4 +37,5 @@ public class SkeletonMethodVisitor extends MethodNode {
                 .map(InvokedInstruction::fromInsNodeList)
                 .collect(Collectors.toList()));
     }
+
 }
