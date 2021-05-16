@@ -8,7 +8,8 @@ import java.util.List;
 
 @Data
 @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
-public class SkeletonMethod {
-    private String methodName;
-    private List<Instruction> instructions;
+public class InvokedMethod {
+    private String name;
+    private String owner;
+    private List<Param> params = new ArrayList<>();
 }
