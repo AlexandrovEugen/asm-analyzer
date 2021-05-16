@@ -18,6 +18,12 @@ public class SkeletonMethodVisitor extends MethodNode {
         this.skeletonMethod = skeletonMethod;
     }
 
+
+    @Override
+    public void visitInsn(int opcode) {
+        super.visitInsn(opcode);
+    }
+
     @Override
     public void visitEnd() {
         final InsnHandler insnHandler = new InsnHandler(instructions);

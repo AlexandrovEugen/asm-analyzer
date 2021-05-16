@@ -25,12 +25,15 @@ public class InsnHandler {
         List<List<AbstractInsnNode>> nodesList = splitByLines(instructions);
         return nodesList.stream()
                 .map(this::nodesToInstruction)
+                .filter(i -> Objects.nonNull(i.getNewInstance()) || Objects.nonNull(i.getInvokedMethod()))
                 .collect(Collectors.toList());
     }
 
     private Instruction nodesToInstruction(List<AbstractInsnNode> insnNodes) {
-        Instruction instruction = new Instruction();
-        insnNodes.forEach(ins -> handleInsnNode(ins, instruction));
+        final Instruction instruction = new Instruction();
+        final Stack<TypeInsnNode> instances = new Stack<>();
+        final Queue<LdcInsnNode> constants = new LinkedList<>();
+        insnNodes.forEach(ins -> handleInsnNode(ins, instruction, instances, constants));
         return instruction;
     }
 
@@ -50,7 +53,7 @@ public class InsnHandler {
     }
 
 
-    private void handleInsnNode(AbstractInsnNode insNode, Instruction methodIns) {
+    private void handleInsnNode(AbstractInsnNode insNode, Instruction methodIns, Stack<TypeInsnNode> instances, Queue<LdcInsnNode> constants) {
         switch (insNode.getType()) {
             case AbstractInsnNode.FIELD_INSN:
                 FieldInsnNode fieldInsnNode = (FieldInsnNode) insNode;
@@ -67,17 +70,9 @@ public class InsnHandler {
             case AbstractInsnNode.JUMP_INSN:
                 JumpInsnNode jumpInsnNode = (JumpInsnNode) insNode;
                 break;
-            case AbstractInsnNode.FRAME:
-                FrameNode frameNode = (FrameNode) insNode;
-                break;
-            case AbstractInsnNode.INVOKE_DYNAMIC_INSN:
-                InvokeDynamicInsnNode invokeDynamicInsnNode = (InvokeDynamicInsnNode) insNode;
-                break;
-            case AbstractInsnNode.LABEL:
-                LabelNode labelNode = (LabelNode) insNode;
-                break;
             case AbstractInsnNode.LDC_INSN:
                 LdcInsnNode ldcInsnNode = (LdcInsnNode) insNode;
+                constants.add(ldcInsnNode);
                 break;
             case AbstractInsnNode.LINE:
                 LineNumberNode lineNumberNode = (LineNumberNode) insNode;
@@ -87,13 +82,13 @@ public class InsnHandler {
                 LookupSwitchInsnNode lookupSwitchInsnNode = (LookupSwitchInsnNode) insNode;
                 break;
             case AbstractInsnNode.METHOD_INSN:
-                handleMethodInsNode(methodIns, (MethodInsnNode) insNode);
+                handleMethodInsNode(methodIns, (MethodInsnNode) insNode, instances, constants);
                 break;
             case AbstractInsnNode.TABLESWITCH_INSN:
                 TableSwitchInsnNode tableSwitchInsnNode = (TableSwitchInsnNode) insNode;
                 break;
             case AbstractInsnNode.TYPE_INSN:
-                handleTypeInsNode((TypeInsnNode) insNode, methodIns);
+                handleTypeInsNode((TypeInsnNode) insNode, instances);
                 break;
             case AbstractInsnNode.VAR_INSN:
                 VarInsnNode varInsnNode = (VarInsnNode) insNode;
@@ -102,65 +97,46 @@ public class InsnHandler {
     }
 
     @SneakyThrows
-    private void handleTypeInsNode(TypeInsnNode typeInsnNode, Instruction methodIns) {
+    private void handleTypeInsNode(TypeInsnNode typeInsnNode, Stack<TypeInsnNode> instances) {
         if (typeInsnNode.getOpcode() == Opcodes.NEW) {
-            final NewInstance instanceWithConstructor = methodIns.getNewInstance();
-            if (Objects.nonNull(instanceWithConstructor)) {
-                final Param param = new Param();
-                param.setType(typeInsnNode.desc);
-                instanceWithConstructor.addParam(param);
-            } else {
+            instances.push(typeInsnNode);
+        }
+    }
+
+    private void handleMethodInsNode(Instruction methodIns,
+                                     MethodInsnNode methodInsnNode,
+                                     Stack<TypeInsnNode> instances,
+                                     Queue<LdcInsnNode> constants) {
+        if (methodInsnNode.getOpcode() == Opcodes.INVOKESPECIAL) {
+            if (!instances.isEmpty()) {
+                final TypeInsnNode lastAddedInstance = instances.pop();
                 final NewInstance newInstance = new NewInstance();
-                newInstance.setType(typeInsnNode.desc);
+                newInstance.setType(lastAddedInstance.desc);
+                newInstance.setParams(paramsFromDescriptor(methodInsnNode.desc, constants));
                 methodIns.setNewInstance(newInstance);
             }
+        } else {
+            final InvokedMethod invokedMethod = new InvokedMethod();
+            invokedMethod.setOwner(methodInsnNode.owner);
+            invokedMethod.setName(methodInsnNode.name);
+            invokedMethod.setParams(paramsFromDescriptor(methodInsnNode.desc, constants));
+            methodIns.setInvokedMethod(invokedMethod);
         }
     }
 
-    private void handleMethodInsNode(Instruction methodIns, MethodInsnNode methodInsnNode) {
-        if (methodInsnNode.getOpcode() != Opcodes.INVOKESPECIAL) {
-            final NewInstance mainInstance = methodIns.getNewInstance();
-            if (Objects.nonNull(mainInstance)) {
-                final Param param = new Param();
-                param.setType(Type.getReturnType(methodInsnNode.desc).getClassName());
-                mainInstance.addParam(param);
-            } else {
-                final InvokedMethod invokedMethod = new InvokedMethod();
-                invokedMethod.setName(methodInsnNode.name);
-                invokedMethod.setOwner(methodInsnNode.owner);
-                methodIns.setInvokedMethod(invokedMethod);
-            }
-        }
+    private List<Param> paramsFromDescriptor(String desc, Queue<LdcInsnNode> constants) {
+        return Arrays.stream(Type.getArgumentTypes(desc))
+                .map(Type::getClassName)
+                .map(type -> {
+                    final LdcInsnNode valueNode = constants.poll();
+                    final Param param = new Param();
+                    param.setType(type);
+                    if (Objects.nonNull(valueNode)) {
+                        param.setValue(valueNode.cst);
+                    }
+                    return param;
+                })
+                .collect(Collectors.toList());
     }
 
-    private class InstructionMeta {
-        private final Map<String, TypeInsnNode> newInstanceMap = new HashMap<>();
-        private final Map<String, MethodInsnNode> invokedMethodsMap = new HashMap<String, MethodInsnNode>();
-        private final Map<Integer, InsnNode> insnNodeMap = new HashMap<>();
-
-        public void addInsnNode(InsnNode insnNode) {
-            insnNodeMap.put(insnNode.getOpcode(), insnNode);
-        }
-
-        public void addMethodInsNode(MethodInsnNode methodInsnNode) {
-            final String returnType = Type.getReturnType(methodInsnNode.desc).getClassName();
-            invokedMethodsMap.put(returnType, methodInsnNode);
-        }
-
-        public void addNewInstanceNode(TypeInsnNode typeInsnNode) {
-            newInstanceMap.put(typeInsnNode.desc, typeInsnNode);
-        }
-
-        public InsnNode getInsnNode(Integer opcode) {
-            return insnNodeMap.get(opcode);
-        }
-
-        public TypeInsnNode getTypeInsnNode(String type) {
-            return newInstanceMap.get(type);
-        }
-
-        public MethodInsnNode getMethodInsNode(String type) {
-            return invokedMethodsMap.get(type);
-        }
-    }
 }

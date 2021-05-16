@@ -9,5 +9,5 @@ import lombok.experimental.NonFinal;
 @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
 public class Param {
     String type;
-    String value;
+    Object value;
 }
